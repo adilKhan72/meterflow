@@ -29,7 +29,7 @@ def test_dag_shape_and_policies():
 
     assert dag.dag_id == "meter_readings_hourly"
     assert dag.catchup is False and dag.max_active_runs == 4
-    assert set(dag.task_ids) == {"ensure_schema", "land", "validate_and_transform", "load", "refresh_aggregates"}
+    assert set(dag.task_ids) == {"ensure_schema", "land", "validate_and_transform", "load", "refresh_aggregates", "quality_gate"}
     assert dag.get_task("land").upstream_task_ids == {"ensure_schema"}
     assert dag.get_task("validate_and_transform").upstream_task_ids == {"land"}
     assert dag.get_task("load").upstream_task_ids == {"validate_and_transform"}
@@ -43,7 +43,7 @@ def test_dag_runs_end_to_end(tmp_path, monkeypatch):
     import psycopg
 
     monkeypatch.setenv("METERFLOW_LANDING_DIR", str(tmp_path))
-    monkeypatch.setenv("METERFLOW_SIMULATED_METERS", "10")
+    monkeypatch.setenv("METERFLOW_SIMULATED_METERS", "50")
     dag = load_dag()
 
     run = dag.test(logical_date=pendulum.datetime(2026, 10, 15, 6, tz="UTC"))
@@ -54,4 +54,4 @@ def test_dag_runs_end_to_end(tmp_path, monkeypatch):
             "SELECT count(*), count(DISTINCT meter_id) FROM readings WHERE ts >= %s AND ts < %s",
             pipeline_hour(run.data_interval_start),
         ).fetchone()
-    assert loaded[0] > 0 and loaded[1] == 10
+    assert loaded[0] > 0 and loaded[1] == 50

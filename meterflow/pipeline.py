@@ -3,6 +3,7 @@
 Intermediate results go to files beside the batch (small metadata only through XCom, never data frames).
 """
 
+import json
 import os
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -13,6 +14,7 @@ import psycopg
 
 from meterflow.generator import generate_batch, read_batch, write_batch
 from meterflow.load import apply_schema, load_readings, refresh_aggregates, save_rejects
+from meterflow.quality import DataQualityError, Thresholds, evaluate
 from meterflow.timeutil import utc
 from meterflow.transform import transform
 from meterflow.validate import validate
@@ -110,13 +112,41 @@ def refresh(settings: Settings, interval_start: datetime, interval_end: datetime
     refresh_aggregates(settings.database_url, utc(interval_start).to_pydatetime(), utc(interval_end).to_pydatetime())
 
 
+def quality_gate(settings: Settings, loaded: dict, interval_start: datetime, interval_end: datetime, thresholds: Thresholds | None = None) -> dict:
+    """Measures the interval as stored (not as staged), records the run, and raises if any threshold is breached."""
+    t = thresholds or Thresholds.from_env()
+    with psycopg.connect(settings.database_url) as conn:
+        # Expected meters: anything that reported in the last 7 days, or (cold start) in this interval.
+        active = conn.execute(
+            "SELECT count(DISTINCT meter_id) FROM readings WHERE ts >= %s - INTERVAL '7 days' AND ts < %s",
+            (interval_start, interval_end),
+        ).fetchone()[0]
+        stored, newest = conn.execute(
+            "SELECT count(*), max(ts) FROM readings WHERE ts >= %s AND ts < %s", (interval_start, interval_end)
+        ).fetchone()
+        lag = (utc(interval_end) - utc(newest)).total_seconds() if newest else None
+        result = evaluate(loaded["raw_rows"], loaded["rejected_rows"], active, stored, lag, t)
+        conn.execute(
+            """INSERT INTO pipeline_runs (batch_id, interval_start, raw_rows, clean_rows, rejected_rows, estimated_rows,
+               spikes, expected_rows, stored_rows, reject_rate, coverage, freshness_lag_s, passed, failures)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (loaded["batch_id"], interval_start, loaded["raw_rows"], loaded["clean_rows"], loaded["rejected_rows"],
+             loaded["estimated_rows"], loaded["spikes"], result.expected_rows, result.stored_rows, result.reject_rate,
+             result.coverage, result.freshness_lag_s, result.passed, json.dumps(result.failures)),
+        )
+    summary = {**loaded, "reject_rate": result.reject_rate, "coverage": result.coverage, "passed": result.passed}
+    if not result.passed:
+        raise DataQualityError(f"batch {loaded['batch_id']} failed quality gate: " + "; ".join(result.failures))
+    return summary
+
+
 def run_interval(settings: Settings, interval_start: datetime, interval_end: datetime) -> dict:
     """The whole interval without Airflow (tests, local runs, one-off backfills)."""
     ensure_schema(settings)
     staged = validate_and_transform(settings, land(settings, interval_start), interval_start, interval_end)
     loaded = load(settings, staged, interval_start)
     refresh(settings, interval_start, interval_end)
-    return loaded
+    return quality_gate(settings, loaded, interval_start, interval_end)
 
 
 __all__ = ["Settings", "asdict", "run_interval"]

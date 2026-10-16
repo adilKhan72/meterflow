@@ -70,3 +70,24 @@ WITH NO DATA;
 SELECT add_continuous_aggregate_policy('readings_daily',
     start_offset => INTERVAL '7 days', end_offset => INTERVAL '1 day', schedule_interval => INTERVAL '1 hour',
     if_not_exists => TRUE);
+
+-- One row per pipeline run (ADR-0003): what came in, what was kept, and whether the quality gate passed.
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+    id              bigserial PRIMARY KEY,
+    batch_id        text        NOT NULL,
+    interval_start  timestamptz NOT NULL,
+    raw_rows        integer     NOT NULL,
+    clean_rows      integer     NOT NULL,
+    rejected_rows   integer     NOT NULL,
+    estimated_rows  integer     NOT NULL,
+    spikes          integer     NOT NULL,
+    expected_rows   integer     NOT NULL,
+    stored_rows     integer     NOT NULL,
+    reject_rate     double precision NOT NULL,
+    coverage        double precision NOT NULL,
+    freshness_lag_s double precision,
+    passed          boolean     NOT NULL,
+    failures        jsonb       NOT NULL DEFAULT '[]'::jsonb,
+    recorded_at     timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS pipeline_runs_batch_idx ON pipeline_runs (batch_id, recorded_at DESC);
