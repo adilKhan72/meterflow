@@ -1,6 +1,7 @@
 """Idempotent loading into TimescaleDB (ADR-0002): COPY → temp staging → upsert keyed by (meter_id, ts)."""
 
 import json
+import time
 from datetime import datetime, timedelta
 from importlib import resources
 
@@ -57,14 +58,27 @@ def save_rejects(conn: psycopg.Connection, rejects: pd.DataFrame, batch_id: str)
         return len(rejects)
 
 
+def _refresh(conn: psycopg.Connection, view: str, start: datetime, end: datetime, attempts: int = 6) -> None:
+    """TimescaleDB rejects a refresh while its own refresh policy (or another run) is refreshing the same window.
+    That other refresh finishing is exactly what we're waiting for, so back off and retry; anything else is raised."""
+    for attempt in range(attempts):
+        try:
+            conn.execute(f"CALL refresh_continuous_aggregate('{view}', %s, %s)", (start, end))
+            return
+        except psycopg.errors.LockNotAvailable:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.5 * 2**attempt)
+
+
 def refresh_aggregates(url: str, start: datetime, end: datetime) -> None:
     """Continuous-aggregate refreshes can't run inside a transaction: use a dedicated autocommit connection.
     The hourly view is refreshed first because the daily one is built from it."""
     with psycopg.connect(url, autocommit=True) as conn:
-        conn.execute("CALL refresh_continuous_aggregate('readings_hourly', %s, %s)", (start, end))
+        _refresh(conn, "readings_hourly", start, end)
         # Daily buckets must be refreshed whole: cover every UTC day the interval touches.
         day_start = start.replace(hour=0, minute=0, second=0, microsecond=0)
         day_end = end.replace(hour=0, minute=0, second=0, microsecond=0)
         if day_end < end:
             day_end += timedelta(days=1)
-        conn.execute("CALL refresh_continuous_aggregate('readings_daily', %s, %s)", (day_start, day_end))
+        _refresh(conn, "readings_daily", day_start, day_end)

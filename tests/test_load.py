@@ -63,3 +63,22 @@ def test_continuous_aggregates_match_raw_totals(db):
     daily = db.execute("SELECT round(sum(kwh)::numeric, 6) FROM readings_daily").fetchone()[0]
     assert raw == hourly == daily
     assert count(db, "SELECT count(*) FROM readings_hourly") == 5
+
+
+def test_refresh_retries_while_another_refresh_holds_the_window(monkeypatch):
+    import psycopg
+
+    from meterflow import load
+
+    calls = {"n": 0}
+
+    class FakeConn:
+        def execute(self, sql, params):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise psycopg.errors.LockNotAvailable("concurrent refresh")
+
+    monkeypatch.setattr(load.time, "sleep", lambda s: None)
+    load._refresh(FakeConn(), "readings_hourly", INTERVAL_START, INTERVAL_END)
+
+    assert calls["n"] == 3
