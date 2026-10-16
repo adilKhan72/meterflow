@@ -28,11 +28,28 @@ flowchart LR
 
 Key decisions are recorded as ADRs in [docs/adr](docs/adr).
 
+## Pipeline stages (milestone 1)
+
+- **Generator** (`meterflow/generator.py`): deterministic hourly batches of 15-minute readings with a daily load curve, plus the
+  faults real feeds have: corrected re-deliveries, negative readings, malformed meter ids, timestamps from the future,
+  missing readings, spikes and supply outages. Arrival order is shuffled.
+- **Validation** (`validate.py`): a pandera schema (types, ranges, id format) plus a batch-interval rule. Every rejected row
+  keeps *all* of its reasons. Outages (0 V) are valid data, flagged downstream, not rejected.
+- **Transform** (`transform.py`): dedupe keeping the latest delivery. Single inner gaps are interpolated and marked
+  `estimated`, while edge gaps stay missing (no extrapolation). `spike` is flagged against the meter's history when
+  available, `outage` at 0 V. Values are never altered.
+- **Load** (`load.py`): `COPY` → temporary staging → `INSERT … ON CONFLICT … WHERE excluded.delivered_at >= readings.delivered_at`.
+  A stale re-run can't roll back a correction. Rejects are replaced per batch, and continuous aggregates are refreshed
+  for the touched window (autocommit, as TimescaleDB requires).
+
+Tests: 20, including integration tests on TimescaleDB 2.30 in CI that check the hypertable and policies, idempotent
+re-loads, that a later correction wins over a stale re-run, and that hourly and daily aggregates exactly match raw totals.
+
 ## Roadmap
 
 | # | Milestone | Status |
 |---|---|---|
-| 1 | Synthetic meter-data generator (with realistic faults), validation, transforms, TimescaleDB schema, idempotent loader | in progress |
+| 1 | Synthetic meter-data generator (with realistic faults), validation, transforms, TimescaleDB schema, idempotent loader | ✅ done (#1) |
 | 2 | Airflow 3 DAG (hourly intervals, backfill), DAG tests + an end-to-end `dag.test()` run in CI against TimescaleDB | planned |
 | 3 | Data-quality gate, run metadata, continuous-aggregate queries and an example dashboard | planned |
 
