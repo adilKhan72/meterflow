@@ -27,3 +27,36 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: python -m pytest -q
+
+  airflow:
+    name: Airflow 3 DAG (integrity + end-to-end dag.test on TimescaleDB)
+    runs-on: ubuntu-latest
+    services:
+      timescaledb:
+        image: timescale/timescaledb:2.30.2-pg17
+        env:
+          POSTGRES_PASSWORD: mf
+          POSTGRES_DB: mf
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      METERFLOW_DATABASE_URL: postgresql://postgres:mf@localhost:5432/mf
+      AIRFLOW_HOME: ${{ github.workspace }}/.airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: ${{ github.workspace }}/dags
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install Airflow (official constraints) and the pipeline
+        run: |
+          pip install "apache-airflow==3.3.2" --constraint https://raw.githubusercontent.com/apache/airflow/constraints-3.3.2/constraints-3.12.txt
+          pip install -r requirements.txt
+      - run: airflow db migrate
+      - name: DAG import errors
+        run: airflow dags list-import-errors
+      - run: python -m pytest -q tests/dags
