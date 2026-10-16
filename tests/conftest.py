@@ -15,7 +15,8 @@ def db():
         pytest.skip("DATABASE_URL not set (integration tests need TimescaleDB)")
     from meterflow.load import apply_schema
 
-    with psycopg.connect(url) as conn:
+    # autocommit: the fixture must never hold a transaction open while the code under test takes locks.
+    with psycopg.connect(url, autocommit=True) as conn:
         apply_schema(conn)
         conn.execute("TRUNCATE readings, rejects")
         conn.commit()
