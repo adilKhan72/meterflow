@@ -1,0 +1,38 @@
+# Local stack: TimescaleDB + Airflow 3 standalone (scheduler, API server and UI in one container).
+#   docker compose up -d   →   UI at http://localhost:8080 (admin password printed in the airflow logs)
+name: meterflow
+
+services:
+  timescaledb:
+    image: timescale/timescaledb:2.30.2-pg17
+    environment:
+      POSTGRES_PASSWORD: meterflow   # local only
+      POSTGRES_DB: meterflow
+    ports: ["127.0.0.1:5433:5432"]
+    volumes: [tsdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 20
+
+  airflow:
+    image: apache/airflow:3.3.2-python3.12
+    command: standalone
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      METERFLOW_DATABASE_URL: postgresql://postgres:meterflow@timescaledb:5432/meterflow
+      METERFLOW_LANDING_DIR: /opt/airflow/landing
+      PYTHONPATH: /opt/meterflow
+      # Fine for a local demo; build a custom image for anything real.
+      _PIP_ADDITIONAL_REQUIREMENTS: "pandera==0.34.1"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./meterflow:/opt/meterflow/meterflow
+      - landing:/opt/airflow/landing
+    ports: ["127.0.0.1:8080:8080"]
+    depends_on:
+      timescaledb: { condition: service_healthy }
+
+volumes:
+  tsdata:
+  landing:

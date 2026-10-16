@@ -45,13 +45,48 @@ Key decisions are recorded as ADRs in [docs/adr](docs/adr).
 Tests: 20, including integration tests on TimescaleDB 2.30 in CI that check the hypertable and policies, idempotent
 re-loads, that a later correction wins over a stale re-run, and that hourly and daily aggregates exactly match raw totals.
 
+## The DAG
+
+`meter_readings_hourly` (Airflow 3, TaskFlow): **ensure_schema → land → validate_and_transform → load → refresh_aggregates → quality_gate**
+
+- One run per hourly data interval. Every task resolves the UTC hour from the run's interval start, which also gives
+  manual runs a well-defined hour (Airflow 3 gives them a zero-width interval).
+- `catchup=False`. History is loaded deliberately (`airflow backfill create --dag-id meter_readings_hourly --from-date … --to-date …`),
+  which is safe because each run touches only its own hour and every write is an upsert.
+- `max_active_runs=4`, 2 retries with exponential backoff. Only paths and counts go through XCom, never data frames.
+- The logic lives in `meterflow/pipeline.py` and runs without Airflow (`run_interval`), so the DAG is purely scheduling.
+
+## Data-quality gate
+
+After loading, `quality_gate` measures the interval **as stored** and fails the task if any threshold is breached.
+Failing hands the run to Airflow's retries and alerting instead of letting it quietly succeed:
+
+| check | default | env var |
+|---|---|---|
+| reject rate | ≤ 5% | `METERFLOW_MAX_REJECT_RATE` |
+| coverage (stored ÷ active meters × 4 slots) | ≥ 95% | `METERFLOW_MIN_COVERAGE` |
+| freshness (interval end − newest reading) | ≤ 30 min | `METERFLOW_MAX_FRESHNESS_LAG_S` |
+
+Every run, passed or failed, is recorded in `pipeline_runs`. [`sql/dashboard.sql`](sql/dashboard.sql) has the queries a
+dashboard would use: daily usage per meter, top consumers with estimated share, the fleet load curve, spikes and
+outages, and pipeline health. All of them read the continuous aggregates.
+
+## Running it
+
+```bash
+docker compose up -d        # TimescaleDB + Airflow 3 standalone, UI on :8080; enable meter_readings_hourly
+```
+
+Tests: `pytest` (unit, plus TimescaleDB integration when `DATABASE_URL` is set). CI also installs Airflow 3.3.2 with the
+official constraints and runs DAG integrity checks and a real `dag.test()` end to end against TimescaleDB.
+
 ## Roadmap
 
 | # | Milestone | Status |
 |---|---|---|
 | 1 | Synthetic meter-data generator (with realistic faults), validation, transforms, TimescaleDB schema, idempotent loader | ✅ done (#1) |
-| 2 | Airflow 3 DAG (hourly intervals, backfill), DAG tests + an end-to-end `dag.test()` run in CI against TimescaleDB | planned |
-| 3 | Data-quality gate, run metadata, continuous-aggregate queries and an example dashboard | planned |
+| 2 | Airflow 3 DAG (hourly intervals, backfill), DAG tests + an end-to-end `dag.test()` run in CI against TimescaleDB | ✅ done (#2) |
+| 3 | Data-quality gate, `pipeline_runs` metadata, dashboard queries, local Airflow compose | ✅ done (#3) |
 
 ## Licence
 

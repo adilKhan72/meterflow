@@ -1,6 +1,7 @@
 """Hourly smart-meter pipeline (Airflow 3, TaskFlow API).
 
-One run per hourly data interval: ensure schema → land → validate & transform → load → refresh aggregates. Each run touches only its
+One run per hourly data interval: ensure schema → land → validate & transform → load → refresh aggregates →
+quality gate. Each run touches only its
 own interval and every write is an upsert (ADR-0002), so retries, catch-up and `airflow backfill create` are safe.
 """
 
@@ -49,9 +50,15 @@ def meter_readings_hourly():
         pipeline.refresh(pipeline.Settings.from_env(), start, end)
         return loaded
 
+    @task
+    def quality_gate(loaded: dict, data_interval_start=None) -> dict:
+        """Fails the run (→ retries, alerts) if the stored interval breaches a threshold (ADR-0003)."""
+        start, end = pipeline.hourly_interval(data_interval_start)
+        return pipeline.quality_gate(pipeline.Settings.from_env(), loaded, start, end)
+
     landed = land()
     ensure_schema() >> landed
-    refresh_aggregates(load(validate_and_transform(landed)))
+    quality_gate(refresh_aggregates(load(validate_and_transform(landed))))
 
 
 dag_object = meter_readings_hourly()

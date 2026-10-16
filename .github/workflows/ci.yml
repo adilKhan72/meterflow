@@ -27,6 +27,11 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: python -m pytest -q
+      - name: Dashboard queries run against the schema
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/dashboard.sql > /dev/null
+      - name: Compose file is valid
+        run: docker compose config --quiet
 
   airflow:
     name: Airflow 3 DAG (integrity + end-to-end dag.test on TimescaleDB)

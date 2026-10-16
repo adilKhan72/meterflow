@@ -18,6 +18,6 @@ def db():
     # autocommit: the fixture must never hold a transaction open while the code under test takes locks.
     with psycopg.connect(url, autocommit=True) as conn:
         apply_schema(conn)
-        conn.execute("TRUNCATE readings, rejects")
+        conn.execute("TRUNCATE readings, rejects, pipeline_runs")
         conn.commit()
         yield conn
