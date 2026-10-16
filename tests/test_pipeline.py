@@ -42,3 +42,14 @@ def test_history_feeds_the_spike_baseline(settings, db):
     # The injected 25x spike is caught against each meter's own history.
     assert result["spikes"] >= 1
     assert db.execute("SELECT count(*) FROM readings WHERE spike").fetchone()[0] >= 1
+
+
+def test_hourly_interval_is_the_hour_containing_the_run_start():
+    from datetime import datetime, timezone
+
+    from meterflow.pipeline import hourly_interval
+
+    # A manual Airflow 3 run has start == end; the batch is still a well-defined hour.
+    start, end = hourly_interval(datetime(2026, 10, 15, 6, 0, tzinfo=timezone.utc))
+    assert (start, end) == (datetime(2026, 10, 15, 6, tzinfo=timezone.utc), datetime(2026, 10, 15, 7, tzinfo=timezone.utc))
+    assert hourly_interval(datetime(2026, 10, 15, 6, 41, tzinfo=timezone.utc)) == (start, end)

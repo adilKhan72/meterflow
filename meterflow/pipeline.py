@@ -33,6 +33,17 @@ class Settings:
         )
 
 
+def hourly_interval(data_interval_start: datetime) -> tuple[datetime, datetime]:
+    """The UTC hour this run processes.
+
+    Scheduled and backfill runs of an @hourly DAG already get exactly this. Manual runs (and `dag.test()`) in Airflow 3
+    get a zero-width interval (start == end), which would process nothing, so the batch is always the hour containing
+    the interval start.
+    """
+    start = utc(data_interval_start).floor("h")
+    return start.to_pydatetime(), (start + pd.Timedelta(hours=1)).to_pydatetime()
+
+
 def batch_id(interval_start: datetime) -> str:
     return utc(interval_start).strftime("%Y%m%dT%H")
 
@@ -50,10 +61,15 @@ def land(settings: Settings, interval_start: datetime) -> str:
     return str(path)
 
 
+def ensure_schema(settings: Settings) -> None:
+    """Once per run, before anything touches the database (see schema.sql for why it's cheap and lock-safe)."""
+    with psycopg.connect(settings.database_url) as conn:
+        apply_schema(conn)
+
+
 def typical_kwh(settings: Settings, before: datetime) -> dict[str, float]:
     """Each meter's median 15-minute reading over the previous 7 days: the spike baseline."""
     with psycopg.connect(settings.database_url) as conn:
-        apply_schema(conn)
         rows = conn.execute(
             "SELECT meter_id, percentile_cont(0.5) WITHIN GROUP (ORDER BY kwh) FROM readings "
             "WHERE ts >= %s - INTERVAL '7 days' AND ts < %s AND NOT spike GROUP BY meter_id",
@@ -85,7 +101,6 @@ def load(settings: Settings, staged: dict, interval_start: datetime) -> dict:
     rejects = pd.read_csv(staged["rejects_path"], dtype=str).fillna("")
     bid = batch_id(interval_start)
     with psycopg.connect(settings.database_url) as conn:
-        apply_schema(conn)
         written = load_readings(conn, clean, bid)
         rejected = save_rejects(conn, rejects, bid)
     return {**staged, "batch_id": bid, "rows_written": written, "rejects_saved": rejected}
@@ -97,6 +112,7 @@ def refresh(settings: Settings, interval_start: datetime, interval_end: datetime
 
 def run_interval(settings: Settings, interval_start: datetime, interval_end: datetime) -> dict:
     """The whole interval without Airflow (tests, local runs, one-off backfills)."""
+    ensure_schema(settings)
     staged = validate_and_transform(settings, land(settings, interval_start), interval_start, interval_end)
     loaded = load(settings, staged, interval_start)
     refresh(settings, interval_start, interval_end)

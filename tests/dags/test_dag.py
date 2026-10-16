@@ -11,6 +11,12 @@ airflow = pytest.importorskip("airflow")
 DAG_FILE = Path(__file__).resolve().parents[2] / "dags" / "meter_readings.py"
 
 
+def pipeline_hour(start):
+    from meterflow.pipeline import hourly_interval
+
+    return hourly_interval(start)
+
+
 def load_dag():
     spec = importlib.util.spec_from_file_location("meter_readings", DAG_FILE)
     module = importlib.util.module_from_spec(spec)
@@ -23,7 +29,8 @@ def test_dag_shape_and_policies():
 
     assert dag.dag_id == "meter_readings_hourly"
     assert dag.catchup is False and dag.max_active_runs == 4
-    assert set(dag.task_ids) == {"land", "validate_and_transform", "load", "refresh_aggregates"}
+    assert set(dag.task_ids) == {"ensure_schema", "land", "validate_and_transform", "load", "refresh_aggregates"}
+    assert dag.get_task("land").upstream_task_ids == {"ensure_schema"}
     assert dag.get_task("validate_and_transform").upstream_task_ids == {"land"}
     assert dag.get_task("load").upstream_task_ids == {"validate_and_transform"}
     assert dag.get_task("refresh_aggregates").upstream_task_ids == {"load"}
@@ -45,6 +52,6 @@ def test_dag_runs_end_to_end(tmp_path, monkeypatch):
     with psycopg.connect(os.environ["METERFLOW_DATABASE_URL"]) as conn:
         loaded = conn.execute(
             "SELECT count(*), count(DISTINCT meter_id) FROM readings WHERE ts >= %s AND ts < %s",
-            (run.data_interval_start, run.data_interval_end),
+            pipeline_hour(run.data_interval_start),
         ).fetchone()
     assert loaded[0] > 0 and loaded[1] == 10

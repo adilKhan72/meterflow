@@ -1,4 +1,6 @@
--- Applied idempotently by meterflow.load.apply_schema (ADR-0004).
+-- Applied idempotently by meterflow.load.apply_schema (ADR-0004). Runs once per DAG run (ensure_schema task),
+-- serialised by an advisory lock, and takes no heavy locks when everything already exists.
+SELECT pg_advisory_xact_lock(hashtext('meterflow.schema'));
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 CREATE TABLE IF NOT EXISTS readings (
@@ -15,7 +17,15 @@ CREATE TABLE IF NOT EXISTS readings (
 );
 SELECT create_hypertable('readings', by_range('ts', INTERVAL '1 day'), if_not_exists => TRUE);
 
-ALTER TABLE readings SET (timescaledb.compress, timescaledb.compress_segmentby = 'meter_id', timescaledb.compress_orderby = 'ts DESC');
+-- ALTER TABLE needs an exclusive lock: only run it the first time.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM timescaledb_information.hypertables WHERE hypertable_name = 'readings' AND compression_enabled
+    ) THEN
+        ALTER TABLE readings SET (timescaledb.compress, timescaledb.compress_segmentby = 'meter_id', timescaledb.compress_orderby = 'ts DESC');
+    END IF;
+END $$;
 SELECT add_compression_policy('readings', INTERVAL '7 days', if_not_exists => TRUE);
 SELECT add_retention_policy('readings', INTERVAL '400 days', if_not_exists => TRUE);
 

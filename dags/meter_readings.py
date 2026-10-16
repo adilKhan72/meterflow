@@ -1,6 +1,6 @@
 """Hourly smart-meter pipeline (Airflow 3, TaskFlow API).
 
-One run per hourly data interval: land → validate & transform → load → refresh aggregates. Each run touches only its
+One run per hourly data interval: ensure schema → land → validate & transform → load → refresh aggregates. Each run touches only its
 own interval and every write is an upsert (ADR-0002), so retries, catch-up and `airflow backfill create` are safe.
 """
 
@@ -24,23 +24,34 @@ from meterflow import pipeline
 )
 def meter_readings_hourly():
     @task
+    def ensure_schema() -> None:
+        pipeline.ensure_schema(pipeline.Settings.from_env())
+
+    # Every task derives the same hour from the run's interval start (see pipeline.hourly_interval).
+    @task
     def land(data_interval_start=None) -> str:
-        return pipeline.land(pipeline.Settings.from_env(), data_interval_start)
+        start, _ = pipeline.hourly_interval(data_interval_start)
+        return pipeline.land(pipeline.Settings.from_env(), start)
 
     @task
-    def validate_and_transform(raw_path: str, data_interval_start=None, data_interval_end=None) -> dict:
-        return pipeline.validate_and_transform(pipeline.Settings.from_env(), raw_path, data_interval_start, data_interval_end)
+    def validate_and_transform(raw_path: str, data_interval_start=None) -> dict:
+        start, end = pipeline.hourly_interval(data_interval_start)
+        return pipeline.validate_and_transform(pipeline.Settings.from_env(), raw_path, start, end)
 
     @task
     def load(staged: dict, data_interval_start=None) -> dict:
-        return pipeline.load(pipeline.Settings.from_env(), staged, data_interval_start)
+        start, _ = pipeline.hourly_interval(data_interval_start)
+        return pipeline.load(pipeline.Settings.from_env(), staged, start)
 
     @task
-    def refresh_aggregates(loaded: dict, data_interval_start=None, data_interval_end=None) -> dict:
-        pipeline.refresh(pipeline.Settings.from_env(), data_interval_start, data_interval_end)
+    def refresh_aggregates(loaded: dict, data_interval_start=None) -> dict:
+        start, end = pipeline.hourly_interval(data_interval_start)
+        pipeline.refresh(pipeline.Settings.from_env(), start, end)
         return loaded
 
-    refresh_aggregates(load(validate_and_transform(land())))
+    landed = land()
+    ensure_schema() >> landed
+    refresh_aggregates(load(validate_and_transform(landed)))
 
 
 dag_object = meter_readings_hourly()
