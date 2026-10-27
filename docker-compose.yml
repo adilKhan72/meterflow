@@ -4,7 +4,7 @@ name: meterflow
 
 services:
   timescaledb:
-    image: timescale/timescaledb:2.30.2-pg17
+    image: timescale/timescaledb:2.31.0-pg17
     environment:
       POSTGRES_PASSWORD: meterflow   # local only
       POSTGRES_DB: meterflow
